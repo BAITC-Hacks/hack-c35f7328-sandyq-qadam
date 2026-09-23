@@ -4,69 +4,27 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_error
 
 
-MODELING_DATA_PATH = Path(
-    "data/processed/modeling_daily_sales.csv"
-)
-
-ADJUSTED_DEMAND_PATH = Path(
-    "data/processed/adjusted_daily_demand.csv"
+FINAL_DEMAND_PATH = Path(
+    "data/processed/final_demand.csv"
 )
 
 
 def load_forecasting_data() -> pd.DataFrame:
     """
-    Combine complete daily calendar with
-    anomaly-adjusted demand.
+    Load final demand history after:
+    - one-off order correction
+    - stockout correction
     """
 
-    modeling = pd.read_csv(
-        MODELING_DATA_PATH,
+    data = pd.read_csv(
+        FINAL_DEMAND_PATH,
         parse_dates=["date"],
     )
 
-    adjusted = pd.read_csv(
-        ADJUSTED_DEMAND_PATH,
-        parse_dates=["date"],
-    )
-
-    modeling["sku"] = (
-        modeling["sku"]
+    data["sku"] = (
+        data["sku"]
         .astype(str)
         .str.strip()
-    )
-
-    adjusted["sku"] = (
-        adjusted["sku"]
-        .astype(str)
-        .str.strip()
-    )
-
-    adjusted = adjusted[
-        [
-            "date",
-            "sku",
-            "adjusted_demand",
-            "anomalies_found",
-        ]
-    ]
-
-    data = modeling.merge(
-        adjusted,
-        on=["date", "sku"],
-        how="left",
-    )
-
-    # If there was no transaction on that day,
-    # regular demand is currently treated as zero.
-    data["adjusted_demand"] = (
-        data["adjusted_demand"]
-        .fillna(0.0)
-    )
-
-    data["anomalies_found"] = (
-        data["anomalies_found"]
-        .fillna(0)
-        .astype(int)
     )
 
     data = (
@@ -85,11 +43,8 @@ def simple_mean_forecast(
     lookback_days: int = 56,
 ) -> pd.DataFrame:
     """
-    Very simple baseline.
-
-    Uses the mean adjusted demand from the
-    last lookback_days and predicts that same
-    value for every future day.
+    Very simple baseline:
+    mean final demand over recent days.
     """
 
     history = (
@@ -108,7 +63,7 @@ def simple_mean_forecast(
     )
 
     mean_demand = float(
-        recent["adjusted_demand"].mean()
+        recent["final_demand"].mean()
     )
 
     mean_demand = max(
@@ -140,11 +95,8 @@ def seasonal_weekday_forecast(
     """
     Seasonal baseline.
 
-    Forecasts each future weekday using demand
-    from the same weekday during recent weeks.
-
-    Example:
-    future Monday -> average of recent Mondays.
+    Each future weekday is predicted from recent
+    same weekdays using final demand.
     """
 
     history = (
@@ -182,7 +134,7 @@ def seasonal_weekday_forecast(
     ].copy()
 
     fallback = float(
-        recent["adjusted_demand"].mean()
+        recent["final_demand"].mean()
     )
 
     predictions = []
@@ -192,7 +144,7 @@ def seasonal_weekday_forecast(
 
         same_weekday = recent[
             recent["day_of_week"] == weekday
-        ]["adjusted_demand"]
+        ]["final_demand"]
 
         if not same_weekday.empty:
             prediction = float(
@@ -225,13 +177,12 @@ def forecast_demand(
     weeks: int = 8,
 ) -> dict:
     """
-    Main forecasting function used by the project.
+    Main forecasting contract.
 
-    Contract:
-        horizon_days =
-        lead_time_days + review_period_days
+    horizon_days =
+    lead_time_days + review_period_days
 
-    Uses seasonal weekday forecasting.
+    Returns total forecast over the full horizon.
     """
 
     if horizon_days <= 0:
@@ -271,6 +222,18 @@ def forecast_demand(
         ].sum()
     )
 
+    stockout_days = int(
+        history[
+            "stockout_flag"
+        ].sum()
+    )
+
+    recovered_demand = float(
+        history[
+            "stockout_adjustment"
+        ].sum()
+    )
+
     return {
         "sku": sku,
         "forecast": round(
@@ -279,7 +242,11 @@ def forecast_demand(
         ),
         "horizon_days": horizon_days,
         "anomalies_found": anomaly_count,
-        "stockout_days": 0,
+        "stockout_days": stockout_days,
+        "recovered_lost_demand": round(
+            recovered_demand,
+            2,
+        ),
         "daily_forecast": future,
     }
 
@@ -291,13 +258,11 @@ def evaluate_baselines(
     weeks: int = 8,
 ) -> dict:
     """
-    Compare two forecasting approaches:
+    Compare:
+    1. simple recent mean
+    2. seasonal weekday baseline
 
-    1. Simple mean baseline
-    2. Seasonal weekday baseline
-
-    Uses time-based backtesting:
-    last test_days are hidden as test data.
+    Uses time-based backtesting.
     """
 
     all_actual = []
@@ -348,12 +313,14 @@ def evaluate_baselines(
         )
 
         actual = (
-            test["adjusted_demand"]
+            test["final_demand"]
             .to_numpy()
         )
 
         simple_pred = (
-            simple["predicted_demand"]
+            simple[
+                "predicted_demand"
+            ]
             .to_numpy()
         )
 
@@ -364,14 +331,18 @@ def evaluate_baselines(
             .to_numpy()
         )
 
-        simple_mae = mean_absolute_error(
-            actual,
-            simple_pred,
+        simple_mae = (
+            mean_absolute_error(
+                actual,
+                simple_pred,
+            )
         )
 
-        seasonal_mae = mean_absolute_error(
-            actual,
-            seasonal_pred,
+        seasonal_mae = (
+            mean_absolute_error(
+                actual,
+                seasonal_pred,
+            )
         )
 
         sku_results.append(
@@ -449,7 +420,7 @@ def evaluate_baselines(
 
 def main():
     print(
-        "Loading forecasting data..."
+        "Loading final demand..."
     )
 
     data = load_forecasting_data()
@@ -506,6 +477,20 @@ def main():
         "Historical anomalies:",
         result[
             "anomalies_found"
+        ],
+    )
+
+    print(
+        "Historical stockout days:",
+        result[
+            "stockout_days"
+        ],
+    )
+
+    print(
+        "Recovered lost demand:",
+        result[
+            "recovered_lost_demand"
         ],
     )
 
@@ -587,7 +572,7 @@ def main():
         "Per-SKU comparison:"
     )
 
-    comparison = (
+    print(
         evaluation[
             "sku_results"
         ]
@@ -595,10 +580,6 @@ def main():
             "seasonal_mae"
         )
         .head(10)
-    )
-
-    print(
-        comparison
     )
 
 
