@@ -3,3 +3,4 @@ numpy
 openpyxl
 scikit-learn
 matplotlib
+pytest
