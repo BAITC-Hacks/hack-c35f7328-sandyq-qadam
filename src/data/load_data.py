@@ -1,8 +1,14 @@
 from pathlib import Path
+
 import pandas as pd
 
 
 def load_retail_data(file_path: str | Path) -> pd.DataFrame:
+    """
+    Load all sheets from Online Retail II Excel file
+    and combine them into one DataFrame.
+    """
+
     file_path = Path(file_path)
 
     if not file_path.exists():
@@ -21,7 +27,10 @@ def load_retail_data(file_path: str | Path) -> pd.DataFrame:
         df["source_sheet"] = sheet_name
         dataframes.append(df)
 
-    combined = pd.concat(dataframes, ignore_index=True)
+    combined = pd.concat(
+        dataframes,
+        ignore_index=True,
+    )
 
     return combined
 
