@@ -31,6 +31,5 @@ class OrderDecision(TypedDict):
     explanation: str
 
 
-def expected_horizon_days(lead_time_days: int) -> int:
-    return max(int(lead_time_days), 1) + REVIEW_PERIOD_DAYS
-
+def expected_horizon_days(lead_time_days: int, review_period_days: int = REVIEW_PERIOD_DAYS) -> int:
+    return max(int(lead_time_days), 1) + review_period_days

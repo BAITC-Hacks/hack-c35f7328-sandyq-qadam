@@ -4,6 +4,8 @@ from math import ceil
 from typing import Any
 
 from .contracts import REVIEW_PERIOD_DAYS, expected_horizon_days
+from .risk import calculate_risk
+from .explanation import build_explanation
 
 
 def _round_to_moq(value: float, minimum_order_qty: int) -> int:
@@ -24,6 +26,7 @@ def calculate_order(
     safety_stock: float,
     minimum_order_qty: int = 1,
     unit_cost: float = 0.0,
+    review_period_days: int = REVIEW_PERIOD_DAYS,
 ) -> dict[str, Any]:
     """Convert a horizon forecast into an explainable supplier order.
 
@@ -42,18 +45,12 @@ def calculate_order(
     raw_order = target_stock - inventory_position
     recommended_order = _round_to_moq(raw_order, minimum_order_qty)
 
-    if inventory_position < forecast:
-        risk = "HIGH"
-    elif inventory_position < target_stock:
-        risk = "MEDIUM"
-    else:
-        risk = "LOW"
-
-    explanation = (
-        f"Прогноз спроса {forecast:.0f} + страховой запас {safety_stock:.0f} "
-        f"− остаток {stock:.0f} − в пути {incoming:.0f} = {raw_order:.0f}; "
-        f"рекомендация округлена до партии {max(int(minimum_order_qty), 1)}. "
-        f"Риск {risk}: доступно {inventory_position:.0f}, спрос до пополнения {forecast:.0f}."
+    risk = calculate_risk(forecast, stock, incoming, safety_stock)
+    explanation = build_explanation(
+        forecast=forecast, horizon_days=expected_horizon_days(lead_time_days, review_period_days),
+        stock=stock, incoming=incoming, safety_stock=safety_stock,
+        recommended_order=recommended_order, risk=risk,
+        minimum_order_qty=max(int(minimum_order_qty), 1),
     )
     return {
         "sku": str(sku),
@@ -62,8 +59,8 @@ def calculate_order(
         "stock": stock,
         "incoming": incoming,
         "lead_time_days": lead_time_days,
-        "review_period_days": REVIEW_PERIOD_DAYS,
-        "horizon_days": expected_horizon_days(lead_time_days),
+        "review_period_days": review_period_days,
+        "horizon_days": expected_horizon_days(lead_time_days, review_period_days),
         "safety_stock": safety_stock,
         "minimum_order_qty": max(int(minimum_order_qty), 1),
         "recommended_order": recommended_order,
