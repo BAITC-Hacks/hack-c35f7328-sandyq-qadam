@@ -3,6 +3,8 @@ Hackathon team repository for Sandyq Qadam
 # hack-c35f7328-sandyq-qadam
 Hackathon team repository for Sandyq Qadam
 
+For judges / reviewers: if the main branch currently shows only a basic README.md, please check the other branches — the working implementation may still be located in dev, feature/data-forecasting, feature/inventory, and feature/frontend. The team developed the solution in parallel branches and merged components incrementally.
+
 # Sandyq Qadam — AI Procurement Assistant
 
 AI-powered demand forecasting and supplier order recommendation system.
