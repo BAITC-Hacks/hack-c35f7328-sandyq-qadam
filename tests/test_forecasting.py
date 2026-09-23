@@ -5,6 +5,7 @@ from src.forecasting.baseline import (
     forecast_demand,
     seasonal_weekday_forecast,
 )
+from src.forecasting.model import get_demand_forecast
 
 
 def create_test_data() -> pd.DataFrame:
@@ -166,3 +167,44 @@ def test_seasonal_predictions_are_non_negative():
     assert (
         forecast["predicted_demand"] >= 0
     ).all()
+
+
+def test_inventory_contract_horizon():
+    data = create_test_data()
+
+    result = get_demand_forecast(
+        sku="TEST_SKU",
+        lead_time_days=14,
+        review_period_days=7,
+        data=data,
+    )
+
+    assert result["horizon_days"] == 21
+    assert result["lead_time_days"] == 14
+    assert result["review_period_days"] == 7
+
+
+def test_inventory_contract_contains_required_fields():
+    data = create_test_data()
+
+    result = get_demand_forecast(
+        sku="TEST_SKU",
+        lead_time_days=14,
+        review_period_days=7,
+        data=data,
+    )
+
+    required_fields = {
+        "sku",
+        "forecast",
+        "horizon_days",
+        "lead_time_days",
+        "review_period_days",
+        "anomalies_found",
+        "stockout_days",
+        "recovered_lost_demand",
+    }
+
+    assert required_fields.issubset(
+        result.keys()
+    )
