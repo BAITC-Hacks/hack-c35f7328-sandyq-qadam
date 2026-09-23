@@ -22,7 +22,13 @@ ADJUSTED_DAILY_PATH = Path(
 
 
 def load_modeling_skus() -> set[str]:
-    modeling_data = pd.read_csv(MODELING_DATA_PATH)
+    """
+    Load SKU selected for the forecasting MVP.
+    """
+
+    modeling_data = pd.read_csv(
+        MODELING_DATA_PATH
+    )
 
     modeling_data["sku"] = (
         modeling_data["sku"]
@@ -30,13 +36,19 @@ def load_modeling_skus() -> set[str]:
         .str.strip()
     )
 
-    return set(modeling_data["sku"].unique())
+    return set(
+        modeling_data["sku"].unique()
+    )
 
 
 def filter_transactions_to_modeling_skus(
     transactions: pd.DataFrame,
     modeling_skus: set[str],
 ) -> pd.DataFrame:
+    """
+    Keep only transactions for the SKU
+    selected for forecasting.
+    """
 
     df = transactions.copy()
 
@@ -46,14 +58,26 @@ def filter_transactions_to_modeling_skus(
         .str.strip()
     )
 
-    return df[
-        df["sku"].isin(modeling_skus)
+    df = df[
+        df["sku"].isin(
+            modeling_skus
+        )
     ].copy()
+
+    return df
 
 
 def create_customer_daily_orders(
     transactions: pd.DataFrame,
 ) -> pd.DataFrame:
+    """
+    Aggregate valid sales by:
+
+    date + SKU + customer
+
+    This allows us to detect unusually large
+    one-off purchases from individual customers.
+    """
 
     sales = transactions[
         transactions["is_valid_sale"] == True
@@ -65,7 +89,10 @@ def create_customer_daily_orders(
     )
 
     sales = sales.dropna(
-        subset=["invoice_date", "sku"]
+        subset=[
+            "invoice_date",
+            "sku",
+        ]
     )
 
     sales["date"] = (
@@ -81,12 +108,22 @@ def create_customer_daily_orders(
 
     customer_daily = (
         sales.groupby(
-            ["date", "sku", "customer_id"],
+            [
+                "date",
+                "sku",
+                "customer_id",
+            ],
             as_index=False,
         )
         .agg(
-            quantity=("quantity", "sum"),
-            product_name=("product_name", "first"),
+            quantity=(
+                "quantity",
+                "sum",
+            ),
+            product_name=(
+                "product_name",
+                "first",
+            ),
         )
     )
 
@@ -96,6 +133,10 @@ def create_customer_daily_orders(
 def add_sku_statistics(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
+    """
+    Add SKU-level statistics used to detect
+    unusually large orders.
+    """
 
     sku_stats = (
         df.groupby("sku")["quantity"]
@@ -108,7 +149,8 @@ def add_sku_statistics(
     )
 
     sku_stats["iqr"] = (
-        sku_stats["q3"] - sku_stats["q1"]
+        sku_stats["q3"]
+        - sku_stats["q1"]
     )
 
     return df.merge(
@@ -122,13 +164,16 @@ def add_customer_statistics(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Calculate historical behaviour of each
-    customer for each SKU.
+    Calculate historical purchase behaviour
+    of each customer for each SKU.
     """
 
     customer_stats = (
         df.groupby(
-            ["sku", "customer_id"]
+            [
+                "sku",
+                "customer_id",
+            ]
         )["quantity"]
         .agg(
             customer_order_days="count",
@@ -139,7 +184,10 @@ def add_customer_statistics(
 
     return df.merge(
         customer_stats,
-        on=["sku", "customer_id"],
+        on=[
+            "sku",
+            "customer_id",
+        ],
         how="left",
     )
 
@@ -153,11 +201,13 @@ def detect_large_orders(
     """
     Detect strong one-off customer purchases.
 
-    Conditions:
-    - known customer;
-    - strong SKU-level statistical anomaly;
-    - much larger than normal SKU order;
-    - unusual for this customer's own history.
+    Order is considered anomalous if:
+
+    1. Customer is known.
+    2. Quantity is above SKU IQR threshold.
+    3. Quantity is much larger than normal SKU order.
+    4. Purchase is rare for this customer
+       or extreme compared with customer's history.
     """
 
     df = add_sku_statistics(
@@ -170,7 +220,8 @@ def detect_large_orders(
 
     df["iqr_threshold"] = (
         df["q3"]
-        + iqr_multiplier * df["iqr"]
+        + iqr_multiplier
+        * df["iqr"]
     )
 
     df["median_threshold"] = (
@@ -184,11 +235,15 @@ def detect_large_orders(
     )
 
     known_customer = (
-        df["customer_id"] != "UNKNOWN"
+        df["customer_id"]
+        != "UNKNOWN"
     )
 
     sku_anomaly = (
-        (df["quantity"] > df["iqr_threshold"])
+        (
+            df["quantity"]
+            > df["iqr_threshold"]
+        )
         &
         (
             df["quantity"]
@@ -196,14 +251,11 @@ def detect_large_orders(
         )
     )
 
-    # If customer purchased this SKU only once,
-    # it is naturally a one-off relationship.
     rare_customer_order = (
-        df["customer_order_days"] <= 2
+        df["customer_order_days"]
+        <= 2
     )
 
-    # For recurring customers require this order
-    # to also be extreme relative to their own history.
     unusual_for_customer = (
         df["quantity"]
         >= df["customer_threshold"]
@@ -225,15 +277,15 @@ def adjust_large_orders(
     detected: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Preserve actual quantity but cap anomaly
-    contribution for regular-demand forecasting.
+    Preserve actual sales quantity,
+    but create adjusted_quantity for forecasting.
+
+    Large one-off purchases are replaced
+    by a more typical SKU-level quantity.
     """
 
     df = detected.copy()
 
-    # Conservative replacement:
-    # use SKU-level upper threshold instead
-    # of deleting the sale completely.
     replacement = np.maximum(
         df["q3"],
         df["median"],
@@ -256,16 +308,34 @@ def adjust_large_orders(
 def create_adjusted_daily_demand(
     adjusted_orders: pd.DataFrame,
 ) -> pd.DataFrame:
+    """
+    Aggregate adjusted orders back
+    to exactly one row per date + SKU.
 
-    return (
+    We intentionally do NOT group by product_name,
+    because one SKU can have slightly different
+    descriptions over time. Grouping by product_name
+    could create duplicate date + SKU rows.
+    """
+
+    daily = (
         adjusted_orders
         .groupby(
-            ["date", "sku", "product_name"],
+            [
+                "date",
+                "sku",
+            ],
             as_index=False,
-            dropna=False,
         )
         .agg(
-            raw_sales=("quantity", "sum"),
+            product_name=(
+                "product_name",
+                "first",
+            ),
+            raw_sales=(
+                "quantity",
+                "sum",
+            ),
             adjusted_demand=(
                 "adjusted_quantity",
                 "sum",
@@ -277,10 +347,13 @@ def create_adjusted_daily_demand(
         )
     )
 
+    return daily
+
 
 def main():
-
-    print("Loading cleaned transactions...")
+    print(
+        "Loading cleaned transactions..."
+    )
 
     transactions = pd.read_csv(
         TRANSACTIONS_PATH
@@ -291,11 +364,23 @@ def main():
         transactions.shape,
     )
 
-    modeling_skus = load_modeling_skus()
+    print()
+    print(
+        "Loading modeling SKU..."
+    )
+
+    modeling_skus = (
+        load_modeling_skus()
+    )
 
     print(
         "Modeling SKU count:",
         len(modeling_skus),
+    )
+
+    print()
+    print(
+        "Filtering transactions..."
     )
 
     transactions = (
@@ -338,14 +423,21 @@ def main():
         customer_multiplier=5.0,
     )
 
-    adjusted = adjust_large_orders(
-        detected
+    adjusted = (
+        adjust_large_orders(
+            detected
+        )
     )
 
     adjusted_daily = (
         create_adjusted_daily_demand(
             adjusted
         )
+    )
+
+    CUSTOMER_ANOMALIES_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
     detected.to_csv(
@@ -362,17 +454,20 @@ def main():
         detected["is_large_order"]
     ].copy()
 
-    anomaly_count = len(anomalies)
+    anomaly_count = len(
+        anomalies
+    )
 
     affected_skus = (
-        anomalies["sku"].nunique()
+        anomalies["sku"]
+        .nunique()
     )
 
     anomaly_rate = (
         anomaly_count
         / len(detected)
         * 100
-        if len(detected)
+        if len(detected) > 0
         else 0
     )
 
@@ -398,8 +493,33 @@ def main():
 
     print(
         "Anomaly rate:",
-        round(anomaly_rate, 2),
+        round(
+            anomaly_rate,
+            2,
+        ),
         "%",
+    )
+
+    print()
+    print(
+        "Adjusted daily rows:",
+        len(adjusted_daily),
+    )
+
+    duplicate_count = (
+        adjusted_daily
+        .duplicated(
+            subset=[
+                "date",
+                "sku",
+            ]
+        )
+        .sum()
+    )
+
+    print(
+        "Duplicate date + SKU rows:",
+        duplicate_count,
     )
 
     print()
@@ -408,7 +528,6 @@ def main():
     )
 
     if not anomalies.empty:
-
         largest = (
             anomalies
             .sort_values(
