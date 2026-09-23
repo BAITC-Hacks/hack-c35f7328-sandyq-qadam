@@ -1,0 +1,10 @@
+sku,stock,incoming,lead_time_days,supplier,category,minimum_order_qty,unit_cost
+85123A,34,30,21,Supplier_A,Home,5,6778.0
+71053,157,0,21,Supplier_B,Lighting,1,1865.0
+84406B,104,50,21,Supplier_C,Electrical,20,10903.0
+84029G,145,20,7,Supplier_A,Decor,20,7030.0
+22752,100,0,7,Supplier_B,Home,20,11832.0
+21730,123,20,30,Supplier_C,Lighting,10,6929.0
+22423,92,0,7,Supplier_A,Electrical,10,13374.0
+85099B,30,50,30,Supplier_B,Decor,5,9659.0
+
