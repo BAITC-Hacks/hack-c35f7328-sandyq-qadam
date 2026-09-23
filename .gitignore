@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment variables
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Raw / generated data
+data/raw/*
+!data/raw/.gitkeep
+
+data/processed/*
+!data/processed/.gitkeep
+
+data/synthetic/*
+!data/synthetic/.gitkeep
+
+# Generated outputs
+outputs/*
+!outputs/forecasts/.gitkeep
+!outputs/recommendations/.gitkeep
+
+# Models
+*.pkl
+*.joblib
+*.cbm
+
+# OS
+.DS_Store
