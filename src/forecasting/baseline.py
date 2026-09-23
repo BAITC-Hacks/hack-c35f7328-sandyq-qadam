@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error
 
@@ -16,8 +15,8 @@ ADJUSTED_DEMAND_PATH = Path(
 
 def load_forecasting_data() -> pd.DataFrame:
     """
-    Combine the complete daily calendar with
-    anomaly-adjusted regular demand.
+    Combine complete daily calendar with
+    anomaly-adjusted demand.
     """
 
     modeling = pd.read_csv(
@@ -57,7 +56,8 @@ def load_forecasting_data() -> pd.DataFrame:
         how="left",
     )
 
-    # Missing date in adjusted data means no sale that day.
+    # If there was no transaction on that day,
+    # regular demand is currently treated as zero.
     data["adjusted_demand"] = (
         data["adjusted_demand"]
         .fillna(0.0)
@@ -69,11 +69,67 @@ def load_forecasting_data() -> pd.DataFrame:
         .astype(int)
     )
 
-    data = data.sort_values(
-        ["sku", "date"]
-    ).reset_index(drop=True)
+    data = (
+        data.sort_values(
+            ["sku", "date"]
+        )
+        .reset_index(drop=True)
+    )
 
     return data
+
+
+def simple_mean_forecast(
+    history: pd.DataFrame,
+    horizon_days: int,
+    lookback_days: int = 56,
+) -> pd.DataFrame:
+    """
+    Very simple baseline.
+
+    Uses the mean adjusted demand from the
+    last lookback_days and predicts that same
+    value for every future day.
+    """
+
+    history = (
+        history
+        .sort_values("date")
+        .copy()
+    )
+
+    if history.empty:
+        raise ValueError(
+            "History is empty."
+        )
+
+    recent = history.tail(
+        lookback_days
+    )
+
+    mean_demand = float(
+        recent["adjusted_demand"].mean()
+    )
+
+    mean_demand = max(
+        0.0,
+        mean_demand,
+    )
+
+    last_date = history["date"].max()
+
+    future_dates = pd.date_range(
+        start=last_date + pd.Timedelta(days=1),
+        periods=horizon_days,
+        freq="D",
+    )
+
+    return pd.DataFrame(
+        {
+            "date": future_dates,
+            "predicted_demand": mean_demand,
+        }
+    )
 
 
 def seasonal_weekday_forecast(
@@ -82,13 +138,13 @@ def seasonal_weekday_forecast(
     weeks: int = 8,
 ) -> pd.DataFrame:
     """
-    Forecast future demand using recent demand
-    from the same day of week.
+    Seasonal baseline.
+
+    Forecasts each future weekday using demand
+    from the same weekday during recent weeks.
 
     Example:
-    future Monday is estimated using previous Mondays.
-
-    This gives us a simple seasonal baseline.
+    future Monday -> average of recent Mondays.
     """
 
     history = (
@@ -114,8 +170,6 @@ def seasonal_weekday_forecast(
         freq="D",
     )
 
-    predictions = []
-
     recent_start = (
         last_date
         - pd.Timedelta(
@@ -131,6 +185,8 @@ def seasonal_weekday_forecast(
         recent["adjusted_demand"].mean()
     )
 
+    predictions = []
+
     for future_date in future_dates:
         weekday = future_date.dayofweek
 
@@ -138,7 +194,7 @@ def seasonal_weekday_forecast(
             recent["day_of_week"] == weekday
         ]["adjusted_demand"]
 
-        if len(same_weekday) > 0:
+        if not same_weekday.empty:
             prediction = float(
                 same_weekday.mean()
             )
@@ -157,7 +213,9 @@ def seasonal_weekday_forecast(
             }
         )
 
-    return pd.DataFrame(predictions)
+    return pd.DataFrame(
+        predictions
+    )
 
 
 def forecast_demand(
@@ -167,13 +225,13 @@ def forecast_demand(
     weeks: int = 8,
 ) -> dict:
     """
-    Forecast cumulative demand for one SKU.
+    Main forecasting function used by the project.
 
     Contract:
-    horizon_days should equal:
+        horizon_days =
         lead_time_days + review_period_days
 
-    Returns the total forecast over the horizon.
+    Uses seasonal weekday forecasting.
     """
 
     if horizon_days <= 0:
@@ -226,34 +284,45 @@ def forecast_demand(
     }
 
 
-def evaluate_baseline(
+def evaluate_baselines(
     data: pd.DataFrame,
     test_days: int = 28,
+    lookback_days: int = 56,
     weeks: int = 8,
 ) -> dict:
     """
-    Time-based backtest.
+    Compare two forecasting approaches:
 
-    For each SKU:
-    - last test_days are test data;
-    - all earlier observations are training history;
-    - forecast the test period;
-    - calculate MAE.
+    1. Simple mean baseline
+    2. Seasonal weekday baseline
+
+    Uses time-based backtesting:
+    last test_days are hidden as test data.
     """
 
-    actual_values = []
-    predicted_values = []
+    all_actual = []
+    all_simple_predictions = []
+    all_seasonal_predictions = []
 
     sku_results = []
 
-    for sku, group in data.groupby("sku"):
+    for sku, group in data.groupby(
+        "sku"
+    ):
         group = (
-            group
-            .sort_values("date")
+            group.sort_values("date")
             .reset_index(drop=True)
         )
 
-        if len(group) <= test_days + 56:
+        minimum_history = (
+            test_days
+            + max(
+                lookback_days,
+                weeks * 7,
+            )
+        )
+
+        if len(group) <= minimum_history:
             continue
 
         train = group.iloc[
@@ -264,7 +333,13 @@ def evaluate_baseline(
             -test_days:
         ].copy()
 
-        forecast = (
+        simple = simple_mean_forecast(
+            history=train,
+            horizon_days=test_days,
+            lookback_days=lookback_days,
+        )
+
+        seasonal = (
             seasonal_weekday_forecast(
                 history=train,
                 horizon_days=test_days,
@@ -277,40 +352,98 @@ def evaluate_baseline(
             .to_numpy()
         )
 
-        predicted = (
-            forecast["predicted_demand"]
+        simple_pred = (
+            simple["predicted_demand"]
             .to_numpy()
         )
 
-        mae = mean_absolute_error(
+        seasonal_pred = (
+            seasonal[
+                "predicted_demand"
+            ]
+            .to_numpy()
+        )
+
+        simple_mae = mean_absolute_error(
             actual,
-            predicted,
+            simple_pred,
+        )
+
+        seasonal_mae = mean_absolute_error(
+            actual,
+            seasonal_pred,
         )
 
         sku_results.append(
             {
                 "sku": sku,
-                "mae": mae,
+                "simple_mae": simple_mae,
+                "seasonal_mae": seasonal_mae,
+                "seasonal_better": (
+                    seasonal_mae
+                    < simple_mae
+                ),
             }
         )
 
-        actual_values.extend(actual)
-        predicted_values.extend(
-            predicted
+        all_actual.extend(
+            actual
         )
 
-    overall_mae = mean_absolute_error(
-        actual_values,
-        predicted_values,
+        all_simple_predictions.extend(
+            simple_pred
+        )
+
+        all_seasonal_predictions.extend(
+            seasonal_pred
+        )
+
+    simple_overall_mae = (
+        mean_absolute_error(
+            all_actual,
+            all_simple_predictions,
+        )
     )
 
-    results = pd.DataFrame(
+    seasonal_overall_mae = (
+        mean_absolute_error(
+            all_actual,
+            all_seasonal_predictions,
+        )
+    )
+
+    improvement_percent = (
+        (
+            simple_overall_mae
+            - seasonal_overall_mae
+        )
+        / simple_overall_mae
+        * 100
+        if simple_overall_mae > 0
+        else 0.0
+    )
+
+    sku_results = pd.DataFrame(
         sku_results
     )
 
+    seasonal_wins = int(
+        sku_results[
+            "seasonal_better"
+        ].sum()
+    )
+
     return {
-        "overall_mae": overall_mae,
-        "sku_results": results,
+        "simple_mae": simple_overall_mae,
+        "seasonal_mae": seasonal_overall_mae,
+        "improvement_percent": (
+            improvement_percent
+        ),
+        "seasonal_wins": seasonal_wins,
+        "total_skus": len(
+            sku_results
+        ),
+        "sku_results": sku_results,
     }
 
 
@@ -331,14 +464,13 @@ def main():
         data["sku"].nunique(),
     )
 
-    print()
-
     example_sku = (
         data["sku"]
         .value_counts()
         .index[0]
     )
 
+    print()
     print(
         "Example SKU:",
         example_sku,
@@ -372,7 +504,9 @@ def main():
 
     print(
         "Historical anomalies:",
-        result["anomalies_found"],
+        result[
+            "anomalies_found"
+        ],
     )
 
     print()
@@ -381,18 +515,23 @@ def main():
     )
 
     print(
-        result["daily_forecast"].head(10)
+        result[
+            "daily_forecast"
+        ].head(10)
     )
 
     print()
     print(
-        "Running baseline backtest..."
+        "Comparing baselines..."
     )
 
-    evaluation = evaluate_baseline(
-        data=data,
-        test_days=28,
-        weeks=8,
+    evaluation = (
+        evaluate_baselines(
+            data=data,
+            test_days=28,
+            lookback_days=56,
+            weeks=8,
+        )
     )
 
     print()
@@ -401,26 +540,65 @@ def main():
     )
 
     print(
-        "Overall MAE:",
+        "Simple Mean MAE:",
         round(
             evaluation[
-                "overall_mae"
+                "simple_mae"
             ],
             2,
-        )
+        ),
+    )
+
+    print(
+        "Seasonal Weekday MAE:",
+        round(
+            evaluation[
+                "seasonal_mae"
+            ],
+            2,
+        ),
+    )
+
+    print(
+        "Improvement:",
+        round(
+            evaluation[
+                "improvement_percent"
+            ],
+            2,
+        ),
+        "%",
+    )
+
+    print(
+        "Seasonal better on:",
+        evaluation[
+            "seasonal_wins"
+        ],
+        "/",
+        evaluation[
+            "total_skus"
+        ],
+        "SKU",
     )
 
     print()
     print(
-        "Best SKU by MAE:"
+        "Per-SKU comparison:"
     )
 
-    print(
+    comparison = (
         evaluation[
             "sku_results"
         ]
-        .sort_values("mae")
+        .sort_values(
+            "seasonal_mae"
+        )
         .head(10)
+    )
+
+    print(
+        comparison
     )
 
 
